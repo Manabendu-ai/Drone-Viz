@@ -9,12 +9,13 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "framer-motion": "^11.0.0",
+    "lucide-react": "^0.383.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "framer-motion": "^11.0.0",
     "recharts": "^2.8.0",
-    "roslib": "^1.4.0",
-    "lucide-react": "^0.383.0"
+    "roslib": "^1.4.1",
+    "ws": "^8.20.0"
   },
   "devDependencies": {
     "@types/react": "^18.2.0",

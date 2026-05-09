@@ -43,7 +43,8 @@ export function useChat(onParsedCommand) {
       ))
 
       if (parsed) {
-        onParsedCommand?.(parsed)
+        // Pass both the parsed JSON and the original user text
+        onParsedCommand?.(parsed, text)
       }
 
       return { parsed, error: parsed ? null : 'Could not parse LLM response as valid JSON' }

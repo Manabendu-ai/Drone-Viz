@@ -9,15 +9,14 @@ const INITIAL_TELEMETRY = {
   x: 0, y: 0, z: 1.2,
   vx: 0, vy: 0, vz: 0,
   yaw: 0,
-  battery: 87,   // battery not in /odom — mock or wire to a separate topic
+  battery: 87,
 }
 
 export function useROS() {
-  const [rosStatus, setRosStatus]     = useState('disconnected')
-  const [telemetry, setTelemetry]     = useState(INITIAL_TELEMETRY)
-  const simTimer                       = useRef(null)
+  const [rosStatus, setRosStatus] = useState('disconnected')
+  const [telemetry, setTelemetry] = useState(INITIAL_TELEMETRY)
+  const simTimer                   = useRef(null)
 
-  // Simulation fallback — runs while ROS is offline so the UI has live data
   const startSim = useCallback(() => {
     clearInterval(simTimer.current)
     simTimer.current = setInterval(() => {
@@ -39,7 +38,7 @@ export function useROS() {
   const stopSim = useCallback(() => clearInterval(simTimer.current), [])
 
   useEffect(() => {
-    startSim()  // always start sim; real /odom data will override when connected
+    startSim()
 
     rosService.connect(
       (status) => {
@@ -58,8 +57,9 @@ export function useROS() {
     }
   }, [startSim, stopSim])
 
-  const publishCmd = useCallback((linear, angular) => {
-    return rosService.publishTwist(linear, angular)
+  // publishCmd now accepts the raw command text from the LLM
+  const publishCmd = useCallback((commandText) => {
+    return rosService.publishCommand(commandText)
   }, [])
 
   const emergencyStop = useCallback(() => {

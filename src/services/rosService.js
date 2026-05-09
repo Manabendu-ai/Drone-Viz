@@ -4,37 +4,22 @@
 //  and automatic reconnection.
 // ============================================================
 
+import ROSLIB from 'roslib'
 import { config } from './config'
-
-// We load ROSLIB via CDN in index.html for environments that
-// can't resolve the npm package. If using npm, import normally:
-// import ROSLIB from 'roslib'
-
-function getRosLib() {
-  if (typeof window !== 'undefined' && window.ROSLIB) return window.ROSLIB
-  // npm import fallback
-  try { return require('roslib') } catch { return null }
-}
 
 class RosService {
   constructor() {
     this.ros          = null
     this.cmdVelTopic  = null
     this.odomTopic    = null
-    this._onStatus    = null   // (status: 'connected'|'disconnected'|'error') => void
-    this._onTelemetry = null   // (data: TelemetryObject) => void
+    this._onStatus    = null
+    this._onTelemetry = null
     this._retryTimer  = null
     this._retryDelay  = 3000
   }
 
   /** Connect to rosbridge. Retries automatically on disconnect. */
   connect(onStatus, onTelemetry) {
-    const ROSLIB = getRosLib()
-    if (!ROSLIB) {
-      console.error('[ros] ROSLIB not available')
-      return
-    }
-
     this._onStatus    = onStatus
     this._onTelemetry = onTelemetry
 
@@ -47,7 +32,7 @@ class RosService {
     this.ros.on('connection', () => {
       console.info('[ros] Connected to', config.rosWsUrl)
       onStatus?.('connected')
-      this._setupTopics(ROSLIB)
+      this._setupTopics()
     })
 
     this.ros.on('error', (err) => {
@@ -63,19 +48,18 @@ class RosService {
     })
   }
 
-  _setupTopics(ROSLIB) {
-    // ── Publisher: /cmd_vel ──────────────────────────────
+  _setupTopics() {
+    // ── Publisher: /user_command (std_msgs/String) ───────
     this.cmdVelTopic = new ROSLIB.Topic({
-      ros:           this.ros,
-      name:          config.topicCmdVel,
-      messageType:   'geometry_msgs/Twist',
-      throttle_rate: 100,
+      ros:         this.ros,
+      name:        '/user_command',
+      messageType: 'std_msgs/String',
     })
 
     // ── Subscriber: /odom ────────────────────────────────
     this.odomTopic = new ROSLIB.Topic({
       ros:           this.ros,
-      name:          config.topicOdom,
+      name:          '/odom',
       messageType:   'nav_msgs/Odometry',
       throttle_rate: 200,
     })
@@ -83,12 +67,12 @@ class RosService {
     this.odomTopic.subscribe((msg) => {
       if (!this._onTelemetry) return
 
-      const pos  = msg.pose.pose.position
-      const ori  = msg.pose.pose.orientation
-      const vel  = msg.twist.twist
+      const pos = msg.pose.pose.position
+      const ori = msg.pose.pose.orientation
+      const vel = msg.twist.twist
 
       // Quaternion → yaw
-      const yaw  = Math.atan2(
+      const yaw = Math.atan2(
         2 * (ori.w * ori.z + ori.x * ori.y),
         1 - 2 * (ori.y * ori.y + ori.z * ori.z)
       ) * (180 / Math.PI)
@@ -106,30 +90,16 @@ class RosService {
   }
 
   /**
-   * Publish a Twist message to /cmd_vel.
-   * @param {{ x, y, z }} linear
-   * @param {{ z }}        angular
+   * Publish a natural language command string to /user_command.
+   * @param {string} commandText - e.g. "fly forward 2 meters"
    * @returns {boolean} true if published successfully
    */
-  publishTwist(linear, angular) {
+  publishCommand(commandText) {
     if (!this.cmdVelTopic) return false
-    const clamp = (v, lim) => Math.min(lim, Math.max(-lim, v))
-
-    const msg = new (getRosLib().Message)({
-      linear: {
-        x: clamp(linear.x, config.maxLinearVel),
-        y: clamp(linear.y, config.maxLinearVel),
-        z: clamp(linear.z, config.maxLinearVel),
-      },
-      angular: {
-        x: 0,
-        y: 0,
-        z: clamp(angular.z, config.maxAngularVel),
-      },
-    })
-
+    const msg = new ROSLIB.Message({ data: commandText })
     try {
       this.cmdVelTopic.publish(msg)
+      console.info('[ros] Published command:', commandText)
       return true
     } catch (err) {
       console.error('[ros] Publish failed:', err)
@@ -137,9 +107,21 @@ class RosService {
     }
   }
 
-  /** Publish zero velocity — emergency stop. */
+  /**
+   * Keep this for compatibility with existing hook calls.
+   * Converts Twist linear/angular back to a stop command.
+   */
+  publishTwist(linear, angular) {
+    // If all zeros → emergency stop
+    if (!linear.x && !linear.y && !linear.z && !angular.z) {
+      return this.publishCommand('stop')
+    }
+    return this.publishCommand('move')
+  }
+
+  /** Emergency stop */
   emergencyStop() {
-    return this.publishTwist({ x: 0, y: 0, z: 0 }, { z: 0 })
+    return this.publishCommand('stop')
   }
 
   disconnect() {

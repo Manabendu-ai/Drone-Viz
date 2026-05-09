@@ -1,38 +1,17 @@
 // ============================================================
 //  ollamaService.js
 //  Handles all communication with the local Ollama instance.
-//  Model and URL are pulled from config / .env — no hardcoding.
 // ============================================================
 
 import { config } from './config'
 
-const SYSTEM_PROMPT = `You are a drone navigation AI. Convert user natural-language instructions into structured JSON commands for a GPS-denied autonomous drone.
+const SYSTEM_PROMPT = `Drone command translator. Reply with ONLY this exact JSON, no other text:
+{"action":"move","linear":{"x":0.0,"y":0.0,"z":0.0},"angular":{"z":0.0},"description":"summary","confidence":1.0}
 
-Respond ONLY with a single valid JSON object. No prose, no markdown fences, no explanation.
+Actions: move rotate hover takeoff land stop
+x=forward/back y=left/right z=up/down
+Limits: linear [-${config.maxLinearVel},${config.maxLinearVel}] angular [-${config.maxAngularVel},${config.maxAngularVel}]`
 
-Schema (all fields required):
-{
-  "action": "move" | "rotate" | "hover" | "takeoff" | "land" | "stop",
-  "linear":  { "x": float, "y": float, "z": float },
-  "angular": { "z": float },
-  "description": "concise human-readable summary of what the drone will do",
-  "confidence": 0.0–1.0
-}
-
-Rules:
-- linear  values must be in range [-${config.maxLinearVel},  ${config.maxLinearVel}]  m/s
-- angular values must be in range [-${config.maxAngularVel}, ${config.maxAngularVel}] rad/s
-- Clamp any values that exceed these bounds — never exceed them
-- If the command is ambiguous, unsafe, or you cannot parse it: set action="hover", confidence < 0.5
-- Never include any text outside the JSON object`
-
-/**
- * Send a user command to Ollama and stream the response back.
- *
- * @param {string}   userText  - Natural language command from the user
- * @param {Function} onChunk   - Called with the accumulated text as each chunk arrives
- * @returns {{ text: string, parsed: object|null, latency: number }}
- */
 export async function sendCommand(userText, onChunk) {
   const start = Date.now()
 
@@ -50,10 +29,9 @@ export async function sendCommand(userText, onChunk) {
   })
 
   if (!res.ok) {
-    throw new Error(`Ollama responded with HTTP ${res.status}. Is it running on ${config.ollamaUrl}?`)
+    throw new Error(`Ollama HTTP ${res.status}. Is it running on ${config.ollamaUrl}?`)
   }
 
-  // Stream the response
   const reader  = res.body.getReader()
   const decoder = new TextDecoder()
   let fullText  = ''
@@ -61,7 +39,6 @@ export async function sendCommand(userText, onChunk) {
   while (true) {
     const { done, value } = await reader.read()
     if (done) break
-
     const raw = decoder.decode(value)
     for (const line of raw.split('\n')) {
       if (!line.trim()) continue
@@ -71,9 +48,7 @@ export async function sendCommand(userText, onChunk) {
           fullText += obj.message.content
           onChunk?.(fullText)
         }
-      } catch {
-        // partial JSON line — skip
-      }
+      } catch { }
     }
   }
 
@@ -82,39 +57,74 @@ export async function sendCommand(userText, onChunk) {
   return { text: fullText, parsed, latency }
 }
 
-/**
- * Parse the raw LLM text into a validated command object.
- * Returns null if parsing or validation fails.
- */
 function parseAndValidate(raw) {
   try {
-    // Strip any accidental markdown fences
-    const clean = raw.replace(/```json|```/gi, '').trim()
-    const obj   = JSON.parse(clean)
-
-    // Validate required fields
-    const validActions = ['move', 'rotate', 'hover', 'takeoff', 'land', 'stop']
-    if (!validActions.includes(obj.action)) {
-      console.warn('[ollama] Unknown action:', obj.action)
-      obj.action = 'hover'
-    }
-
-    // Clamp velocity values
     const clamp = (v, min, max) => Math.min(max, Math.max(min, Number(v) || 0))
-    obj.linear  = {
-      x: clamp(obj.linear?.x, -config.maxLinearVel,  config.maxLinearVel),
-      y: clamp(obj.linear?.y, -config.maxLinearVel,  config.maxLinearVel),
-      z: clamp(obj.linear?.z, -config.maxLinearVel,  config.maxLinearVel),
-    }
-    obj.angular = {
-      z: clamp(obj.angular?.z, -config.maxAngularVel, config.maxAngularVel),
-    }
-    obj.confidence = clamp(obj.confidence, 0, 1)
-    obj.description = obj.description || obj.action
 
-    return obj
+    // Strategy 1: standard JSON parse after cleanup
+    try {
+      let clean = raw.replace(/```json/gi, '').replace(/```/g, '').trim()
+      const s = clean.indexOf('{')
+      const e = clean.lastIndexOf('}')
+      if (s !== -1 && e !== -1 && e > s) {
+        const obj = JSON.parse(clean.slice(s, e + 1))
+        if (obj.action) return buildResult(obj, clamp)
+      }
+    } catch { }
+
+    // Strategy 2: field-by-field regex extraction
+    // Works even when Phi3 forgets closing braces or adds prose
+    console.warn('[ollama] Full JSON parse failed, using field extraction')
+
+    const action     = extractString(raw, 'action') || 'hover'
+    const desc       = extractString(raw, 'description') || action
+    const lx         = extractNumber(raw, '"x"', 1)
+    const ly         = extractNumber(raw, '"y"', 1)
+    const lz         = extractNumber(raw, '"z"', 1)
+    const az         = extractNumber(raw, '"z"', 2)
+    const confidence = extractFloat(raw, 'confidence') ?? 1.0
+
+    const validActions = ['move', 'rotate', 'hover', 'takeoff', 'land', 'stop']
+
+    return {
+      action:      validActions.includes(action) ? action : 'hover',
+      linear:      { x: clamp(lx, -config.maxLinearVel, config.maxLinearVel), y: clamp(ly, -config.maxLinearVel, config.maxLinearVel), z: clamp(lz, -config.maxLinearVel, config.maxLinearVel) },
+      angular:     { z: clamp(az, -config.maxAngularVel, config.maxAngularVel) },
+      description: desc,
+      confidence:  clamp(confidence, 0, 1),
+    }
+
   } catch (err) {
-    console.error('[ollama] Failed to parse response:', err, '\nRaw:', raw)
+    console.error('[ollama] Parse completely failed:', err, '\nRaw:', raw)
     return null
   }
+}
+
+function buildResult(obj, clamp) {
+  const validActions = ['move', 'rotate', 'hover', 'takeoff', 'land', 'stop']
+  if (!validActions.includes(obj.action)) obj.action = 'hover'
+  obj.linear      = { x: clamp(obj.linear?.x, -config.maxLinearVel, config.maxLinearVel), y: clamp(obj.linear?.y, -config.maxLinearVel, config.maxLinearVel), z: clamp(obj.linear?.z, -config.maxLinearVel, config.maxLinearVel) }
+  obj.angular     = { z: clamp(obj.angular?.z, -config.maxAngularVel, config.maxAngularVel) }
+  obj.confidence  = clamp(obj.confidence ?? 1.0, 0, 1)
+  obj.description = obj.description || obj.action
+  return obj
+}
+
+function extractString(text, key) {
+  const m = text.match(new RegExp(`"${key}"\\s*:\\s*"([^"]+)"`))
+  return m ? m[1] : null
+}
+
+function extractNumber(text, key, nth = 1) {
+  const re = new RegExp(`${key}\\s*:\\s*(-?[\\d.]+)`, 'g')
+  let match, count = 0
+  while ((match = re.exec(text)) !== null) {
+    if (++count === nth) return parseFloat(match[1])
+  }
+  return 0
+}
+
+function extractFloat(text, key) {
+  const m = text.match(new RegExp(`"${key}"\\s*:\\s*(-?[\\d.]+)`))
+  return m ? parseFloat(m[1]) : null
 }

@@ -1,5 +1,4 @@
 import React, { useState, useCallback } from 'react'
-import { AnimatePresence } from 'framer-motion'
 import TopBar          from './components/TopBar'
 import ChatPanel       from './components/ChatPanel'
 import VideoPanel      from './components/VideoPanel'
@@ -20,8 +19,8 @@ export default function App() {
     setTimeout(() => setAlerts(a => a.filter(x => x.id !== id)), 5000)
   }, [])
 
-  // Called by useChat when a valid parsed command arrives
-  const handleParsedCommand = useCallback((parsed) => {
+  // parsed = validated JSON from LLM, originalText = what the user typed
+  const handleParsedCommand = useCallback((parsed, originalText) => {
     if (!isCommandSafe(parsed)) {
       addAlert('Command exceeds safety limits — blocked.', 'error')
       return
@@ -30,9 +29,10 @@ export default function App() {
       addAlert('Low confidence — drone hovering instead of executing.', 'warning')
       return
     }
-    const ok = publishCmd(parsed.linear, parsed.angular)
+    // Send the original natural language text to ROS as std_msgs/String
+    const ok = publishCmd(originalText)
     if (!ok && rosStatus === 'connected') {
-      addAlert('Failed to publish to /cmd_vel — check ROS bridge.', 'warning')
+      addAlert('Failed to publish to /user_command — check ROS bridge.', 'warning')
     }
   }, [publishCmd, rosStatus, addAlert])
 
@@ -55,7 +55,6 @@ export default function App() {
       <TopBar rosStatus={rosStatus} onEmergencyStop={handleEmergencyStop} />
 
       <div style={{ display: 'grid', gridTemplateColumns: '380px 1fr 300px', flex: 1, overflow: 'hidden' }}>
-        {/* Left — Chat */}
         <div style={{ borderRight: '1px solid var(--border)', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
           <ChatPanel
             messages={messages}
@@ -66,12 +65,10 @@ export default function App() {
           />
         </div>
 
-        {/* Center — Video */}
         <div style={{ borderRight: '1px solid var(--border)', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
           <VideoPanel telemetry={telemetry} />
         </div>
 
-        {/* Right — Telemetry */}
         <div style={{ overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
           <TelemetryPanel
             telemetry={telemetry}
