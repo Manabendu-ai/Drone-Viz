@@ -17,20 +17,23 @@ function Message({ msg, showJSON }) {
         {isUser ? 'You' : 'Phi-3'}
       </div>
 
-      <div style={{
-        padding: '8px 13px', borderRadius: 14, maxWidth: '90%', fontSize: 13, lineHeight: 1.55,
-        whiteSpace: 'pre-wrap',
-        background: isUser ? 'var(--accent)' : 'var(--surface)',
-        color:      isUser ? '#fff' : 'var(--text)',
-        border:     isUser ? 'none' : '1px solid var(--border)',
-        borderBottomRightRadius: isUser ? 4 : 14,
-        borderBottomLeftRadius:  isUser ? 14 : 4,
-      }}>
-        {msg.streaming && !msg.text
-          ? <span style={{ display: 'inline-block', width: 16, height: 16, border: '2px solid #ccc', borderTopColor: 'var(--accent)', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
-          : msg.text
-        }
-      </div>
+      {/* Show bubble while streaming (spinner), hide once parsed JSON is ready */}
+      {(!msg.parsed || isUser || msg.streaming) && (
+        <div style={{
+          padding: '8px 13px', borderRadius: 14, maxWidth: '90%', fontSize: 13, lineHeight: 1.55,
+          whiteSpace: 'pre-wrap',
+          background: isUser ? 'var(--accent)' : 'var(--surface)',
+          color:      isUser ? '#fff' : 'var(--text)',
+          border:     isUser ? 'none' : '1px solid var(--border)',
+          borderBottomRightRadius: isUser ? 4 : 14,
+          borderBottomLeftRadius:  isUser ? 14 : 4,
+        }}>
+          {msg.streaming && !msg.text
+            ? <span style={{ display: 'inline-block', width: 16, height: 16, border: '2px solid #ccc', borderTopColor: 'var(--accent)', borderRadius: '50%', animation: 'spin 0.7s linear infinite' }} />
+            : msg.text
+          }
+        </div>
+      )}
 
       {/* Parsed output */}
       {msg.parsed && showJSON && (

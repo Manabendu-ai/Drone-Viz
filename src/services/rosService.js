@@ -1,9 +1,3 @@
-// ============================================================
-//  rosService.js
-//  Manages the rosbridge WebSocket connection, topic pub/sub,
-//  and automatic reconnection.
-// ============================================================
-
 import ROSLIB from 'roslib'
 import { config } from './config'
 
@@ -18,7 +12,6 @@ class RosService {
     this._retryDelay  = 3000
   }
 
-  /** Connect to rosbridge. Retries automatically on disconnect. */
   connect(onStatus, onTelemetry) {
     this._onStatus    = onStatus
     this._onTelemetry = onTelemetry
@@ -41,7 +34,7 @@ class RosService {
     })
 
     this.ros.on('close', () => {
-      console.warn('[ros] Connection closed — retrying in', this._retryDelay, 'ms')
+      console.warn('[ros] Disconnected — retrying in', this._retryDelay, 'ms')
       onStatus?.('disconnected')
       clearTimeout(this._retryTimer)
       this._retryTimer = setTimeout(() => this.connect(onStatus, onTelemetry), this._retryDelay)
@@ -49,57 +42,45 @@ class RosService {
   }
 
   _setupTopics() {
-    // ── Publisher: /user_command (std_msgs/String) ───────
+    // ── Publisher: /user_command ──────────────────────────
     this.cmdVelTopic = new ROSLIB.Topic({
       ros:         this.ros,
       name:        '/user_command',
       messageType: 'std_msgs/String',
     })
 
-    // ── Subscriber: /odom ────────────────────────────────
+    // ── Subscriber: /fmu/out/vehicle_local_position_v1 ───
+    // Real PX4 local position at 100Hz
     this.odomTopic = new ROSLIB.Topic({
       ros:           this.ros,
-      name:          '/odom',
-      messageType:   'nav_msgs/Odometry',
-      throttle_rate: 200,
+      name:          '/fmu/out/vehicle_local_position_v1',
+      messageType:   'px4_msgs/msg/VehicleLocalPosition',
+      throttle_rate: 200, // limit to 5Hz for the UI
     })
 
     this.odomTopic.subscribe((msg) => {
       if (!this._onTelemetry) return
 
-      const pos = msg.pose.pose.position
-      const ori = msg.pose.pose.orientation
-      const vel = msg.twist.twist
-
-      // Quaternion → yaw
-      const yaw = Math.atan2(
-        2 * (ori.w * ori.z + ori.x * ori.y),
-        1 - 2 * (ori.y * ori.y + ori.z * ori.z)
-      ) * (180 / Math.PI)
-
+      // PX4 local frame: x=North, y=East, z=Down (NED)
+      // Convert z to altitude: negate z since NED z is down
       this._onTelemetry({
-        x:   pos.x,
-        y:   pos.y,
-        z:   pos.z,
-        vx:  vel.linear.x,
-        vy:  vel.linear.y,
-        vz:  vel.linear.z,
-        yaw,
+        x:   msg.x   ?? 0,
+        y:   msg.y   ?? 0,
+        z:   -(msg.z ?? 0),          // NED → altitude (positive up)
+        vx:  msg.vx  ?? 0,
+        vy:  msg.vy  ?? 0,
+        vz:  -(msg.vz ?? 0),         // NED → positive up
+        yaw: (msg.heading ?? 0) * (180 / Math.PI), // rad → degrees
       })
     })
   }
 
-  /**
-   * Publish a natural language command string to /user_command.
-   * @param {string} commandText - e.g. "fly forward 2 meters"
-   * @returns {boolean} true if published successfully
-   */
   publishCommand(commandText) {
     if (!this.cmdVelTopic) return false
     const msg = new ROSLIB.Message({ data: commandText })
     try {
       this.cmdVelTopic.publish(msg)
-      console.info('[ros] Published command:', commandText)
+      console.info('[ros] Published:', commandText)
       return true
     } catch (err) {
       console.error('[ros] Publish failed:', err)
@@ -107,21 +88,15 @@ class RosService {
     }
   }
 
-  /**
-   * Keep this for compatibility with existing hook calls.
-   * Converts Twist linear/angular back to a stop command.
-   */
+  emergencyStop() {
+    return this.publishCommand('stop')
+  }
+
   publishTwist(linear, angular) {
-    // If all zeros → emergency stop
     if (!linear.x && !linear.y && !linear.z && !angular.z) {
       return this.publishCommand('stop')
     }
     return this.publishCommand('move')
-  }
-
-  /** Emergency stop */
-  emergencyStop() {
-    return this.publishCommand('stop')
   }
 
   disconnect() {
@@ -131,5 +106,4 @@ class RosService {
   }
 }
 
-// Export a singleton
 export const rosService = new RosService()
